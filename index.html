@@ -41,8 +41,10 @@ window._firebaseOnValue = onValue;
 window._firebaseGet = get;
 window._firebaseReady = true;
 
-// Firebase hazır olduğunda uygulamayı başlat
+// Firebase hazır olduğunda başlat
 window.dispatchEvent(new Event('firebase-ready'));
+// Güvenlik için: event atılmadan önce listener eklenmişse diye flag koy
+window._firebaseEventFired = true;
 </script>
 <style>
 :root {
@@ -487,7 +489,6 @@ function showSyncStatus(msg, color='var(--text2)'){
 
 function initFirebase(){
   if(!window._firebaseReady){
-    // Firebase yüklenmediyse localStorage'dan oku
     const local = JSON.parse(localStorage.getItem('cwl_v2') || '{}');
     if(local.players) db.players = local.players;
     if(local.days) db.days = local.days;
@@ -501,7 +502,6 @@ function initFirebase(){
   const dbRef = window._firebaseRef(window._firebaseDB, 'cwl_v2');
   showSyncStatus('🔄 Senkronize ediliyor...', 'var(--text2)');
 
-  // Gerçek zamanlı dinleyici — veri değişince otomatik günceller
   _fbUnsubscribe = window._firebaseOnValue(dbRef, (snapshot) => {
     const data = snapshot.val();
     if(data){
@@ -510,22 +510,24 @@ function initFirebase(){
       if(!db.days) db.days = {};
       if(db.warStarted === undefined) db.warStarted = false;
       if(db.warStartDate === undefined) db.warStartDate = null;
-      // localStorage'ı da güncelle
       localStorage.setItem('cwl_v2', JSON.stringify(db));
     } else {
-      // Firebase boş, localStorage'dan yükle
       const local = JSON.parse(localStorage.getItem('cwl_v2') || '{}');
       if(local.players) { db = local; save(); }
     }
     showSyncStatus('✅ Firebase bağlı', 'var(--green)');
-    renderAll();
+    updateWarPill();
     updateLandStats();
-    // Eğer uygulama açıksa mevcut sayfayı yenile
-    if(isAdmin || isGuest) renderCurrentPage();
+    // Veri giriş sayfasındayken formu YENİDEN RENDER ETME — kullanıcı dolduruyordur
+    if(isAdmin || isGuest){
+      const active = document.querySelector('.page.active');
+      const p = active ? active.id.replace('page-','') : '';
+      if(p === 'veri') return; // form açıkken dokunma
+      renderCurrentPage();
+    }
   }, (error) => {
     console.error('Firebase dinleme hatası:', error);
     showSyncStatus('❌ Firebase bağlantı hatası', 'var(--red)');
-    // Fallback: localStorage
     const local = JSON.parse(localStorage.getItem('cwl_v2') || '{}');
     if(local.players) db = local;
     renderAll();
@@ -544,10 +546,10 @@ function renderCurrentPage(){
   if(p==='ayar') renderAyar();
 }
 
-// Firebase hazır olduğunda başlat
+// Firebase hazır olduğunda başlat — race condition koruması
 window.addEventListener('firebase-ready', () => { initFirebase(); });
-// Zaten hazırsa hemen başlat
-if(window._firebaseReady) initFirebase();
+// Eğer event zaten atıldıysa (module sync yüklendiyse) hemen çağır
+if(window._firebaseEventFired) initFirebase();
 
 // ===== CALC =====
 function calcScore(e){
@@ -568,14 +570,16 @@ function calcScore(e){
 function getTotalScore(p){
   let t = 0;
   for(let d=1;d<=7;d++){
-    const e = db.days[d]?.find(x=>x.player===p);
+    const arr = Array.isArray(db.days[d]) ? db.days[d] : [];
+    const e = arr.find(x=>x.player===p);
     if(e) t += calcScore(e);
   }
   return t;
 }
 
 function getDayScore(p, d){
-  const e = db.days[d]?.find(x=>x.player===p);
+  const arr = Array.isArray(db.days[d]) ? db.days[d] : [];
+  const e = arr.find(x=>x.player===p);
   return e ? calcScore(e) : null;
 }
 
@@ -649,13 +653,13 @@ function showPage(p){
 // ===== LEADERBOARD =====
 function renderLB(){
   const tabsEl = document.getElementById('lbDayTabs');
+  if(!tabsEl) return; // sayfa henüz görünür değil
   const days = [{val:'total',label:'Genel'},...[1,2,3,4,5,6,7].map(d=>({val:d,label:'Gün '+d}))];
   tabsEl.innerHTML = days.map(t=>`
     <div class="dtab ${t.val===curLbDay?'active':''} ${t.val!=='total'&&db.days[t.val]?.length?'has-data':''}"
-      onclick="curLbDay='${t.val}';renderLB()">${t.label}</div>
+      onclick="curLbDay=${JSON.stringify(t.val)};renderLB()">${t.label}</div>
   `).join('');
 
-  // Tüm oyuncular gösterilir, puan hesabı yapılır
   let scores;
   if(curLbDay === 'total'){
     scores = db.players.map(p=>({p, sc:getTotalScore(p)}));
@@ -664,19 +668,25 @@ function renderLB(){
   }
   scores.sort((a,b)=>b.sc-a.sc);
 
-  document.getElementById('lbSubtitle').textContent = curLbDay==='total'
+  const subtitle = document.getElementById('lbSubtitle');
+  if(subtitle) subtitle.textContent = curLbDay==='total'
     ? `${db.players.length} oyuncu • 7 günlük kümülatif puan`
     : `Gün ${curLbDay} sıralaması`;
 
-  // TOP 3
   const top3El = document.getElementById('top3Wrap');
-  if(scores.length < 1){ top3El.innerHTML=''; document.getElementById('lbTableWrap').innerHTML='<div class="empty">Henüz oyuncu eklenmedi. Admin panelinden oyuncu ekleyin.</div>'; return; }
+  const lbTableWrap = document.getElementById('lbTableWrap');
+  if(!top3El || !lbTableWrap) return;
+
+  if(scores.length < 1){
+    top3El.innerHTML='';
+    lbTableWrap.innerHTML='<div class="empty">Henüz oyuncu eklenmedi. Admin panelinden oyuncu ekleyin.</div>';
+    return;
+  }
   const orderedTop = [scores[1], scores[0], scores[2]];
   top3El.innerHTML = orderedTop.map((s,vi)=>{
     if(!s) return '<div></div>';
     const realRank = [2,1,3][vi];
     const sc = s.sc;
-    const av = getAvColor(s.p);
     const avClass = realRank===1?'av1':realRank===2?'av2':'av3';
     const cardCls = realRank===1?'rank1':'';
     const rankEmoji = realRank===1?'🥇':realRank===2?'🥈':'🥉';
@@ -689,10 +699,6 @@ function renderLB(){
     </div>`;
   }).join('');
 
-  // TABLE (rank 4+)
-  const rest = scores.slice(3);
-  const allForTable = scores; // show all in table too for reference
-  
   let tableHtml = `<div class="lb-table-wrap" style="margin-top:16px">
     <div class="lb-table-head">
       <div>Sıra</div><div>Oyuncu</div>
@@ -711,7 +717,6 @@ function renderLB(){
     const participated = countParticipation(s.p);
     const avgStar = getAvgStar(s.p);
     const sc = s.sc;
-    
     let statusTag = '';
     if(curLbDay !== 'total' && dayEntry){
       statusTag = dayEntry.katildi
@@ -720,7 +725,6 @@ function renderLB(){
     } else if(curLbDay === 'total'){
       statusTag = `<span class="tag tag-gray">${participated}/7</span>`;
     }
-
     tableHtml += `<div class="lb-row ${rowCls}">
       <div><span class="rank-badge ${rbCls}">${rank}</span></div>
       <div class="lb-player">
@@ -733,23 +737,31 @@ function renderLB(){
       <div class="lb-cell">${statusTag}</div>
     </div>`;
   });
-
   tableHtml += '</div>';
-  document.getElementById('lbTableWrap').innerHTML = tableHtml;
+  lbTableWrap.innerHTML = tableHtml;
 }
 
 function getParticipationStr(p){
-  let c=0; for(let d=1;d<=7;d++) if(db.days[d]?.find(e=>e.player===p&&e.katildi)) c++;
+  let c=0;
+  for(let d=1;d<=7;d++){
+    const arr = Array.isArray(db.days[d]) ? db.days[d] : [];
+    if(arr.find(e=>e.player===p&&e.katildi)) c++;
+  }
   return `${c}/7 katılım`;
 }
 function countParticipation(p){
-  let c=0; for(let d=1;d<=7;d++) if(db.days[d]?.find(e=>e.player===p&&e.katildi)) c++;
+  let c=0;
+  for(let d=1;d<=7;d++){
+    const arr = Array.isArray(db.days[d]) ? db.days[d] : [];
+    if(arr.find(e=>e.player===p&&e.katildi)) c++;
+  }
   return c;
 }
 function getAvgStar(p){
   let t=0,c=0;
   for(let d=1;d<=7;d++){
-    const e=db.days[d]?.find(x=>x.player===p);
+    const arr = Array.isArray(db.days[d]) ? db.days[d] : [];
+    const e = arr.find(x=>x.player===p);
     if(e&&e.katildi){t+=e.yildiz;c++;}
   }
   return c>0?(t/c).toFixed(1):'—';
@@ -766,75 +778,118 @@ function renderVeriForm(){
   const formEl = document.getElementById('veriForm');
   if(!db.players.length){ formEl.innerHTML='<div class="empty">Önce Oyuncular sayfasından oyuncu ekleyin.</div>'; return; }
 
-  formEl.innerHTML = db.players.map(player=>{
-    const pfx = `e_${curVeriDay}_${CSS.escape(player)}`;
-    const ex = db.days[curVeriDay]?.find(e=>e.player===player);
+  // Oyuncu adı yerine INDEX kullanıyoruz — Türkçe karakter sorunu yok
+  formEl.innerHTML = db.players.map((player, pi)=>{
+    const ex = (Array.isArray(db.days[curVeriDay]) ? db.days[curVeriDay] : []).find(e=>e.player===player);
     const sc = ex ? calcScore(ex) : null;
     const av = getAvColor(player);
+    const katildi = ex ? ex.katildi : true; // varsayılan: katıldı
+
     return `<div class="entry-block">
       <div class="entry-title">
         <span style="display:flex;align-items:center;gap:10px">
           <span class="lb-av ${av}" style="color:#fff;width:34px;height:34px;font-size:13px">${player[0].toUpperCase()}</span>
           ${player}
         </span>
-        <span class="score-preview ${sc===null?'':'sc===null'}" id="${pfx}_sc" style="color:${sc===null?'var(--text2)':sc>0?'var(--green)':sc<0?'var(--red)':'var(--text2)'}">
+        <span class="score-preview" id="sc_${pi}" style="color:${sc===null?'var(--text2)':sc>0?'var(--green)':sc<0?'var(--red)':'var(--text2)'}">
           ${sc===null?'Girilmedi':(sc>0?'+':'')+sc+' puan'}
         </span>
       </div>
       <div style="margin-bottom:12px">
         <div class="sec-label">Savaşa Katıldı?</div>
         <div class="toggle-row">
-          <button class="togbtn ${!ex||ex.katildi?'active':''}" id="${pfx}_yes"
-            onclick="setKatildi('${pfx}','${player}',true)">✓ Evet</button>
-          <button class="togbtn ${ex&&!ex.katildi?'active-red':''}" id="${pfx}_no"
-            onclick="setKatildi('${pfx}','${player}',false)">✗ Hayır</button>
+          <button class="togbtn ${katildi?'active':''}" id="yes_${pi}"
+            onclick="setKatildi(${pi}, true)">✓ Evet</button>
+          <button class="togbtn ${!katildi?'active-red':''}" id="no_${pi}"
+            onclick="setKatildi(${pi}, false)">✗ Hayır</button>
         </div>
-        <input type="hidden" id="${pfx}_katildi" value="${ex?(ex.katildi?1:0):1}">
+        <input type="hidden" id="katildi_${pi}" value="${katildi?1:0}">
       </div>
       <div class="form-grid">
-        <div class="field"><label>Kendi BB</label><input type="number" id="${pfx}_kendi" min="1" max="17" value="${ex?.kendiBB||12}" placeholder="1-17" oninput="autoSave('${pfx}','${player}')"></div>
-        <div class="field"><label>Rakip BB</label><input type="number" id="${pfx}_rakip" min="1" max="17" value="${ex?.rakipBB||12}" placeholder="1-17" oninput="autoSave('${pfx}','${player}')"></div>
+        <div class="field"><label>Kendi BB</label>
+          <input type="number" id="kendi_${pi}" min="1" max="17" value="${ex?.kendiBB ?? 12}" placeholder="1-17"
+            oninput="autoSave(${pi})">
+        </div>
+        <div class="field"><label>Rakip BB</label>
+          <input type="number" id="rakip_${pi}" min="1" max="17" value="${ex?.rakipBB ?? 12}" placeholder="1-17"
+            oninput="autoSave(${pi})">
+        </div>
         <div class="field"><label>Yıldız</label>
-          <select id="${pfx}_yildiz" onchange="autoSave('${pfx}','${player}')">
-            ${[0,1,2,3].map(i=>`<option value="${i}" ${ex?.yildiz===i?'selected':''}>⭐ ${i}</option>`).join('')}
+          <select id="yildiz_${pi}" onchange="autoSave(${pi})">
+            ${[0,1,2,3].map(i=>`<option value="${i}" ${(ex?.yildiz??0)===i?'selected':''}>⭐ ${i}</option>`).join('')}
           </select>
         </div>
-        <div class="field"><label>Yıkım %</label><input type="number" id="${pfx}_yikim" min="0" max="100" value="${ex?.yikimYuzde||0}" placeholder="0-100" oninput="autoSave('${pfx}','${player}')"></div>
+        <div class="field"><label>Yıkım %</label>
+          <input type="number" id="yikim_${pi}" min="0" max="100" value="${ex?.yikimYuzde ?? 0}" placeholder="0-100"
+            oninput="autoSave(${pi})">
+        </div>
       </div>
-      <button class="btn btn-accent" style="width:100%" onclick="saveEntry('${pfx}','${player}')">💾 Kaydet</button>
+      <button class="btn btn-accent" style="width:100%" onclick="saveEntry(${pi})">💾 Kaydet</button>
     </div>`;
   }).join('');
 }
 
-function setKatildi(pfx, player, val){
-  document.getElementById(pfx+'_katildi').value = val?1:0;
-  document.getElementById(pfx+'_yes').className = 'togbtn' + (val?' active':'');
-  document.getElementById(pfx+'_no').className = 'togbtn' + (!val?' active-red':'');
-  autoSave(pfx, player);
+function setKatildi(pi, val){
+  document.getElementById('katildi_'+pi).value = val ? 1 : 0;
+  document.getElementById('yes_'+pi).className = 'togbtn' + (val ? ' active' : '');
+  document.getElementById('no_'+pi).className  = 'togbtn' + (!val ? ' active-red' : '');
+  // Katılmadıysa alanları disable et ve gizle
+  const fields = ['kendi_'+pi, 'rakip_'+pi, 'yildiz_'+pi, 'yikim_'+pi];
+  fields.forEach(id => {
+    const el = document.getElementById(id);
+    if(el) el.disabled = !val;
+  });
+  autoSave(pi);
 }
 
-function autoSave(pfx, player){
-  saveEntry(pfx, player, true);
+function autoSave(pi){
+  saveEntry(pi, true);
 }
 
-function saveEntry(pfx, player, silent=false){
-  const katildi = document.getElementById(pfx+'_katildi').value === '1';
-  const kendiBB = parseInt(document.getElementById(pfx+'_kendi').value)||1;
-  const rakipBB = parseInt(document.getElementById(pfx+'_rakip').value)||1;
-  const yildiz = parseInt(document.getElementById(pfx+'_yildiz').value)||0;
-  const yikimYuzde = parseFloat(document.getElementById(pfx+'_yikim').value)||0;
-  const entry = {player, katildi, kendiBB, rakipBB, yildiz, yikimYuzde};
-  if(!db.days[curVeriDay]) db.days[curVeriDay] = [];
-  const idx = db.days[curVeriDay].findIndex(e=>e.player===player);
-  if(idx>=0) db.days[curVeriDay][idx]=entry; else db.days[curVeriDay].push(entry);
+function saveEntry(pi, silent=false){
+  const player = db.players[pi];
+  if(!player) return;
+
+  const katildiVal = document.getElementById('katildi_'+pi);
+  const kendiEl   = document.getElementById('kendi_'+pi);
+  const rakipEl   = document.getElementById('rakip_'+pi);
+  const yildizEl  = document.getElementById('yildiz_'+pi);
+  const yikimEl   = document.getElementById('yikim_'+pi);
+
+  if(!katildiVal || !kendiEl || !rakipEl || !yildizEl || !yikimEl){
+    console.warn('Element bulunamadı, pi=', pi);
+    return;
+  }
+
+  const katildi    = katildiVal.value === '1';
+  const kendiBB    = parseInt(kendiEl.value) || 1;
+  const rakipBB    = parseInt(rakipEl.value) || 1;
+  const yildiz     = parseInt(yildizEl.value) || 0;
+  const yikimYuzde = parseFloat(yikimEl.value) || 0;
+
+  const entry = { player, katildi, kendiBB, rakipBB, yildiz, yikimYuzde };
+
+  if(!db.days[curVeriDay] || !Array.isArray(db.days[curVeriDay])) db.days[curVeriDay] = [];
+  const idx = db.days[curVeriDay].findIndex(e => e.player === player);
+  if(idx >= 0) db.days[curVeriDay][idx] = entry;
+  else db.days[curVeriDay].push(entry);
+
   save();
-  const sc = calcScore(entry);
-  const scEl = document.getElementById(pfx+'_sc');
-  if(scEl){ scEl.textContent = (sc>0?'+':'')+sc+' puan'; scEl.style.color = sc>0?'var(--green)':sc<0?'var(--red)':'var(--text2)'; }
-  if(!silent) updateSidebarLike();
-}
 
-function updateSidebarLike(){ updateWarPill(); }
+  const sc = calcScore(entry);
+  const scEl = document.getElementById('sc_'+pi);
+  if(scEl){
+    scEl.textContent = (sc > 0 ? '+' : '') + sc + ' puan';
+    scEl.style.color = sc > 0 ? 'var(--green)' : sc < 0 ? 'var(--red)' : 'var(--text2)';
+  }
+
+  if(!silent){
+    updateWarPill();
+    // Küçük "kaydedildi" bildirimi
+    const btn = document.querySelector(`#veriForm .entry-block:nth-child(${pi+1}) .btn-accent`);
+    if(btn){ btn.textContent = '✅ Kaydedildi'; setTimeout(()=>{ btn.textContent='💾 Kaydet'; }, 1200); }
+  }
+}
 
 // ===== OYUNCU =====
 function addPlayer(){
@@ -847,25 +902,30 @@ function addPlayer(){
   renderPlayerList();
 }
 
-function removePlayer(p){
+function removePlayer(idx){
+  const p = db.players[idx];
+  if(!p) return;
   if(!confirm(p+' silinsin mi? Tüm verileri de silinir.')) return;
   db.players = db.players.filter(x=>x!==p);
-  for(let d in db.days) db.days[d] = db.days[d].filter(e=>e.player!==p);
+  for(let d in db.days){
+    if(Array.isArray(db.days[d])) db.days[d] = db.days[d].filter(e=>e.player!==p);
+  }
   save();
   renderPlayerList();
 }
 
 function renderPlayerList(){
   const el = document.getElementById('playerList');
+  if(!el) return;
   if(!db.players.length){el.innerHTML='<div class="empty">Henüz oyuncu yok.</div>';return;}
-  el.innerHTML = db.players.map(p=>`
+  el.innerHTML = db.players.map((p, idx)=>`
     <div class="player-item">
       <div class="p-avatar ${getAvColor(p)}" style="color:#fff">${p[0].toUpperCase()}</div>
       <div style="flex:1">
         <div style="font-size:14px;font-weight:500">${p}</div>
         <div style="font-size:12px;color:var(--text2)">Toplam: <b style="color:var(--accent2)">${getTotalScore(p)} puan</b> • ${countParticipation(p)}/7 katılım</div>
       </div>
-      <button class="btn btn-danger" style="font-size:12px;padding:6px 12px" onclick="removePlayer('${p}')">Sil</button>
+      <button class="btn btn-danger" style="font-size:12px;padding:6px 12px" onclick="removePlayer(${idx})">Sil</button>
     </div>
   `).join('');
 }
@@ -883,7 +943,8 @@ function renderIstat(){
   if(!p){el.innerHTML='';return;}
   let totalSc=0, part=0, stars=0, best=-999, worst=999, rows=[];
   for(let d=1;d<=7;d++){
-    const e = db.days[d]?.find(x=>x.player===p);
+    const arr = Array.isArray(db.days[d]) ? db.days[d] : [];
+    const e = arr.find(x=>x.player===p);
     if(!e) continue;
     const sc = calcScore(e);
     totalSc+=sc; if(e.katildi){part++;stars+=e.yildiz;}
@@ -919,13 +980,13 @@ function renderIstat(){
 // ===== ROZETLER =====
 const ROZETLER = [
   {icon:'👑',name:'MVP',desc:'En yüksek toplam puan',check:p=>{const s=db.players.map(x=>getTotalScore(x));return db.players.length&&getTotalScore(p)===Math.max(...s)&&s.filter(x=>x===Math.max(...s)).length===1;}},
-  {icon:'⭐',name:'3 Yıldız Ustası',desc:'Bir günde 3 yıldız',check:p=>Object.values(db.days).some(d=>d?.find(e=>e.player===p&&e.yildiz===3&&e.katildi))},
-  {icon:'🛡',name:'Demir Kalkan',desc:'Hiç negatif puan yok',check:p=>{let ok=true;for(let d=1;d<=7;d++){const e=db.days[d]?.find(x=>x.player===p);if(e&&calcScore(e)<0){ok=false;break;}}return ok&&Object.values(db.days).some(d=>d?.find(e=>e.player===p));}},
-  {icon:'⚔️',name:'Tam Savaşçı',desc:'7 gün katıldı',check:p=>{let c=0;for(let d=1;d<=7;d++) if(db.days[d]?.find(e=>e.player===p&&e.katildi)) c++;return c===7;}},
-  {icon:'🏰',name:'Cesur Savaşçı',desc:'2 üst BB yenildi',check:p=>Object.values(db.days).some(d=>d?.find(e=>e.player===p&&e.katildi&&(e.rakipBB-e.kendiBB)>=2&&e.yildiz>0))},
-  {icon:'💥',name:'Yıkım Kralı',desc:'%90+ yıkım yaptı',check:p=>Object.values(db.days).some(d=>d?.find(e=>e.player===p&&e.katildi&&e.yikimYuzde>=90))},
-  {icon:'🔥',name:'Seri Katil',desc:'3 gün üst üste 3 yıldız',check:p=>{let streak=0;for(let d=1;d<=7;d++){const e=db.days[d]?.find(x=>x.player===p);if(e&&e.yildiz===3&&e.katildi){streak++;if(streak>=3)return true;}else streak=0;}return false;}},
-  {icon:'🎯',name:'Keskin Nişancı',desc:'5+ günde %80+ yıkım',check:p=>{let c=0;for(let d=1;d<=7;d++){const e=db.days[d]?.find(x=>x.player===p);if(e&&e.katildi&&e.yikimYuzde>=80) c++;}return c>=5;}},
+  {icon:'⭐',name:'3 Yıldız Ustası',desc:'Bir günde 3 yıldız',check:p=>Object.values(db.days).some(d=>Array.isArray(d)&&d.find(e=>e.player===p&&e.yildiz===3&&e.katildi))},
+  {icon:'🛡',name:'Demir Kalkan',desc:'Hiç negatif puan yok',check:p=>{let ok=true;for(let d=1;d<=7;d++){const arr=Array.isArray(db.days[d])?db.days[d]:[];const e=arr.find(x=>x.player===p);if(e&&calcScore(e)<0){ok=false;break;}}return ok&&Object.values(db.days).some(d=>Array.isArray(d)&&d.find(e=>e.player===p));}},
+  {icon:'⚔️',name:'Tam Savaşçı',desc:'7 gün katıldı',check:p=>{let c=0;for(let d=1;d<=7;d++){const arr=Array.isArray(db.days[d])?db.days[d]:[];if(arr.find(e=>e.player===p&&e.katildi))c++;}return c===7;}},
+  {icon:'🏰',name:'Cesur Savaşçı',desc:'2 üst BB yenildi',check:p=>Object.values(db.days).some(d=>Array.isArray(d)&&d.find(e=>e.player===p&&e.katildi&&(e.rakipBB-e.kendiBB)>=2&&e.yildiz>0))},
+  {icon:'💥',name:'Yıkım Kralı',desc:'%90+ yıkım yaptı',check:p=>Object.values(db.days).some(d=>Array.isArray(d)&&d.find(e=>e.player===p&&e.katildi&&e.yikimYuzde>=90))},
+  {icon:'🔥',name:'Seri Katil',desc:'3 gün üst üste 3 yıldız',check:p=>{let streak=0;for(let d=1;d<=7;d++){const arr=Array.isArray(db.days[d])?db.days[d]:[];const e=arr.find(x=>x.player===p);if(e&&e.yildiz===3&&e.katildi){streak++;if(streak>=3)return true;}else streak=0;}return false;}},
+  {icon:'🎯',name:'Keskin Nişancı',desc:'5+ günde %80+ yıkım',check:p=>{let c=0;for(let d=1;d<=7;d++){const arr=Array.isArray(db.days[d])?db.days[d]:[];const e=arr.find(x=>x.player===p);if(e&&e.katildi&&e.yikimYuzde>=80)c++;}return c>=5;}},
 ];
 
 function renderRozetPage(){
@@ -954,15 +1015,17 @@ function renderRozet(){
 // ===== AYARLAR =====
 function renderAyar(){
   const el = document.getElementById('warInfoBar');
+  if(!el) return;
   el.innerHTML = `<div class="war-info-bar"><div class="status-dot ${db.warStarted?'dot-green':'dot-gray'}"></div>
     ${db.warStarted
       ? `Savaş <b style="color:var(--green)">${new Date(db.warStartDate).toLocaleDateString('tr-TR')}</b> tarihinde başladı`
       : 'Aktif savaş yok'}</div>`;
 
-  const allEntries = Object.values(db.days).reduce((a,b)=>a+(b?.length||0),0);
-  const activeDays = Object.keys(db.days).filter(d=>db.days[d]?.length>0).length;
+  const allEntries = Object.values(db.days).reduce((a,b)=>a+(Array.isArray(b)?b.length:0),0);
+  const activeDays = Object.keys(db.days).filter(d=>Array.isArray(db.days[d])&&db.days[d].length>0).length;
   const topSc = db.players.length ? Math.max(...db.players.map(p=>getTotalScore(p))) : 0;
-  document.getElementById('dashStats').innerHTML = `
+  const ds = document.getElementById('dashStats');
+  if(ds) ds.innerHTML = `
     <div class="stat-card"><div class="stat-label">Oyuncu</div><div class="stat-val">${db.players.length}</div></div>
     <div class="stat-card"><div class="stat-label">Aktif Gün</div><div class="stat-val">${activeDays}/7</div></div>
     <div class="stat-card"><div class="stat-label">Giriş Sayısı</div><div class="stat-val">${allEntries}</div></div>
@@ -977,6 +1040,7 @@ function resetAll(){ db={players:[],days:{},warStarted:false,warStartDate:null};
 
 function updateWarPill(){
   const el = document.getElementById('warPill');
+  if(!el) return; // topbar gizliyken null olabilir
   el.textContent = db.warStarted ? '⚔️ Savaş Aktif' : 'Savaş Yok';
   el.className = 'war-pill '+(db.warStarted?'war-on':'war-off');
 }
@@ -985,13 +1049,14 @@ function updateWarPill(){
 function renderChart(){
   const ctx = document.getElementById('mainChart');
   if(!ctx) return;
-  if(chartInst) chartInst.destroy();
+  try { if(chartInst){ chartInst.destroy(); chartInst = null; } } catch(e){}
   const COLORS = ['#6c63ff','#4dda96','#5ba8ff','#f5c843','#ff5757','#ff9f43','#e879f9','#34d399'];
   const days = [1,2,3,4,5,6,7];
   const datasets = db.players.slice(0,8).map((p,i)=>{
     let cum = 0;
     const data = days.map(d=>{
-      const e = db.days[d]?.find(x=>x.player===p);
+      const arr = Array.isArray(db.days[d]) ? db.days[d] : [];
+      const e = arr.find(x=>x.player===p);
       if(e){ cum += calcScore(e); return cum; }
       return null;
     });
@@ -1026,13 +1091,16 @@ function exportExcel(){
   XLSX.writeFile(wb,'cwl_rapor.xlsx');
 }
 
-// ===== LANDING STATS =====
 function updateLandStats(){
-  document.getElementById('ls-players').textContent = db.players.length;
-  const ad = Object.keys(db.days).filter(d=>db.days[d]?.length>0).length;
-  document.getElementById('ls-days').textContent = ad;
-  const total = Object.values(db.days).reduce((a,b)=>a+(b?.length||0),0);
-  document.getElementById('ls-battles').textContent = total;
+  const lsp = document.getElementById('ls-players');
+  const lsd = document.getElementById('ls-days');
+  const lsb = document.getElementById('ls-battles');
+  if(!lsp||!lsd||!lsb) return;
+  lsp.textContent = db.players.length;
+  const ad = Object.keys(db.days).filter(d=>Array.isArray(db.days[d])&&db.days[d].length>0).length;
+  lsd.textContent = ad;
+  const total = Object.values(db.days).reduce((a,b)=>a+(Array.isArray(b)?b.length:0),0);
+  lsb.textContent = total;
 }
 
 // ===== INIT =====
