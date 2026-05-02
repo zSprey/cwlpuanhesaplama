@@ -558,26 +558,28 @@ function calcScore(e){
   // Kendinden aşağı sıradaki biriyle savaştıysa -5
   if(e.asagiSiraMi) return -5;
 
-  const diff = e.rakipBB - e.kendiBB; // pozitif = üst BB'ye girdi
+  const diff = e.rakipBB - e.kendiBB; // pozitif = üst BB, negatif = alt BB
 
   // 1 yıldız özel kuralı
   if(e.yildiz === 1){
-    // Rakip BB kendi BB'den küçükse (altına girdi) → direkt -2
-    if(diff < 0) return -2;
-    // Rakip BB eşit veya büyükse → 3 puan (normal yıldız puanı)
-    return 3;
+    if(diff < 0) return -2; // altına girdi → direkt -2
+    return 3;               // eşit veya üstü → 3 puan
   }
 
   let sc = 0;
 
   // Yıldız puanı (2 ve 3 yıldız)
-  sc += ({2:6,3:10}[e.yildiz] || 0);
+  sc += ({2:6, 3:10}[e.yildiz] || 0);
 
-  // BB fark bonusu: kaç BB üstüyse o kadar +puan (max +3)
-  if(diff > 0) sc += Math.min(diff, 3);
-
-  // %90+ yıkım bonusu
-  if(e.yikimYuzde >= 90) sc += 2;
+  if(diff > 0){
+    // Üst BB'ye saldırı: fark bonusu + %90 yıkım bonusu
+    sc += Math.min(diff, 3);
+    if(e.yikimYuzde >= 90) sc += 2;
+  } else if(diff < 0){
+    // Alt BB'ye saldırı: fark kadar ceza, %90 bonusu yok
+    sc += diff; // diff negatif olduğu için otomatik eksi
+  }
+  // diff === 0: eşit BB, ne bonus ne ceza
 
   return sc;
 }
