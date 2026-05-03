@@ -554,34 +554,38 @@ if(window._firebaseEventFired) initFirebase();
 // ===== CALC =====
 function calcScore(e){
   if(!e.katildi) return -15;
-
-  // Kendinden aşağı sıradaki biriyle savaştıysa -5
   if(e.asagiSiraMi) return -5;
 
-  const diff = e.rakipBB - e.kendiBB; // pozitif = üst BB, negatif = alt BB
+  const diff = e.rakipBB - e.kendiBB; // + = üst BB, - = alt BB, 0 = eşit
 
-  // 1 yıldız özel kuralı
+  // 3 yıldız: %90 bonusu YOK, yıkım otomatik %100 sayılır
+  if(e.yildiz === 3){
+    let sc = 10;
+    if(diff > 0) sc += Math.min(diff, 3); // üst BB bonusu
+    else if(diff < 0) sc += diff;          // alt BB cezası
+    return sc;
+  }
+
+  // 2 yıldız
+  if(e.yildiz === 2){
+    let sc = 6;
+    if(diff > 0) sc += Math.min(diff, 3); // üst BB bonusu
+    else if(diff < 0) sc += diff;          // alt BB cezası
+    if(e.yikimYuzde >= 90) sc += 2;       // %90 bonusu (alt BB'de de geçerli)
+    return sc;
+  }
+
+  // 1 yıldız
   if(e.yildiz === 1){
-    if(diff < 0) return -2; // altına girdi → direkt -2
-    return 3;               // eşit veya üstü → 3 puan
-  }
-
-  let sc = 0;
-
-  // Yıldız puanı (2 ve 3 yıldız)
-  sc += ({2:6, 3:10}[e.yildiz] || 0);
-
-  if(diff > 0){
-    // Üst BB'ye saldırı: fark bonusu + %90 yıkım bonusu
-    sc += Math.min(diff, 3);
+    if(diff < 0) return -2;  // alt BB'ye girdi → -2
+    if(diff === 0) return 0; // eşit BB → 0
+    // üst BB'ye girdi → +3, %90 bonusu geçerli
+    let sc = 3;
     if(e.yikimYuzde >= 90) sc += 2;
-  } else if(diff < 0){
-    // Alt BB'ye saldırı: fark kadar ceza, %90 bonusu yok
-    sc += diff; // diff negatif olduğu için otomatik eksi
+    return sc;
   }
-  // diff === 0: eşit BB, ne bonus ne ceza
 
-  return sc;
+  return 0; // 0 yıldız
 }
 
 function getTotalScore(p){
@@ -853,12 +857,15 @@ function renderVeriForm(){
                 oninput="autoSave(${pi})">
             </div>
             <div class="field"><label>Yıldız</label>
-              <select id="yildiz_${pi}" onchange="autoSave(${pi})">
+              <select id="yildiz_${pi}" onchange="onYildizChange(${pi})">
                 ${[0,1,2,3].map(i=>`<option value="${i}" ${(ex?.yildiz??0)===i?'selected':''}>⭐ ${i}</option>`).join('')}
               </select>
             </div>
             <div class="field"><label>Yıkım %</label>
-              <input type="number" id="yikim_${pi}" min="0" max="100" value="${ex?.yikimYuzde ?? 0}" placeholder="0-100"
+              <input type="number" id="yikim_${pi}" min="0" max="100"
+                value="${(ex?.yildiz===3)?100:(ex?.yikimYuzde ?? 0)}"
+                placeholder="0-100"
+                ${(ex?.yildiz===3)?'disabled style="opacity:.5"':''}
                 oninput="autoSave(${pi})">
             </div>
           </div>
@@ -898,7 +905,23 @@ function setAsagiSira(pi, val){
   autoSave(pi);
 }
 
-function autoSave(pi){
+function onYildizChange(pi){
+  const yildiz = parseInt(document.getElementById('yildiz_'+pi).value);
+  const yikimEl = document.getElementById('yikim_'+pi);
+  if(yikimEl){
+    if(yildiz === 3){
+      yikimEl.value = 100;
+      yikimEl.disabled = true;
+      yikimEl.style.opacity = '.5';
+    } else {
+      yikimEl.disabled = false;
+      yikimEl.style.opacity = '1';
+    }
+  }
+  autoSave(pi);
+}
+
+
   saveEntry(pi, true);
 }
 
