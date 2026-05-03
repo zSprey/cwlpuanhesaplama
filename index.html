@@ -8,6 +8,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=Exo+2:wght@300;400;500;700&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <!-- Firebase SDK -->
 <script type="module">
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
@@ -367,9 +368,12 @@ select option{background:var(--bg3)}
 
     <!-- PAGE TABS -->
     <div class="page-tabs" id="appTabs">
-      <div class="ptab active" data-page="lb" onclick="showPage('lb')">🏆 Leaderboard</div>
+      <div class="ptab active" data-page="lb" onclick="showPage('lb')">🏆 Sıralama</div>
       <div class="ptab admin-only" data-page="veri" onclick="showPage('veri')">✏️ Veri Girişi</div>
-      <div class="ptab admin-only" data-page="istat" onclick="showPage('istat')">📈 İstatistikler</div>
+      <div class="ptab" data-page="detay" onclick="showPage('detay')">👤 Oyuncu</div>
+      <div class="ptab admin-only" data-page="arsiv" onclick="showPage('arsiv')">📦 Arşiv</div>
+      <div class="ptab" data-page="klan" onclick="showPage('klan')">🔍 Klan Ara</div>
+      <div class="ptab admin-only" data-page="istat" onclick="showPage('istat')">📈 İstatistik</div>
       <div class="ptab admin-only" data-page="rozet" onclick="showPage('rozet')">🎖 Rozetler</div>
       <div class="ptab admin-only" data-page="oyuncu" onclick="showPage('oyuncu')">👥 Oyuncular</div>
       <div class="ptab admin-only" data-page="ayar" onclick="showPage('ayar')">⚙️ Ayarlar</div>
@@ -380,12 +384,61 @@ select option{background:var(--bg3)}
       <div class="lb-header fade-in">
         <h1>Klan Ligi <span>Sıralaması</span></h1>
         <p id="lbSubtitle">7 günlük kümülatif puan sıralaması</p>
+        <button class="btn btn-accent" style="margin-top:10px;font-size:13px" onclick="shareLeaderboard()">📸 Sıralamayı Paylaş</button>
       </div>
-
       <div class="day-tabs" id="lbDayTabs"></div>
-
       <div id="top3Wrap" class="top3 stagger"></div>
       <div id="lbTableWrap"></div>
+    </div>
+
+    <!-- OYUNCU DETAY PAGE -->
+    <div class="page" id="page-detay">
+      <div class="card">
+        <h2>👤 Oyuncu Detayı</h2>
+        <div class="input-row">
+          <div class="field" style="flex:1">
+            <label>Oyuncu Seç</label>
+            <select id="detaySel" onchange="renderDetay()"><option value="">Seçin...</option></select>
+          </div>
+        </div>
+      </div>
+      <div id="detayContent"></div>
+    </div>
+
+    <!-- ARŞİV PAGE -->
+    <div class="page" id="page-arsiv">
+      <div class="card">
+        <h2>📦 Sezon Arşivi</h2>
+        <p style="color:var(--text2);font-size:13px;margin-bottom:16px">Mevcut sezonu arşivleyerek yeni sezon başlatabilirsiniz. Arşivlenen sezonlar silinmez.</p>
+        <div class="input-row" style="margin-bottom:0">
+          <div class="field" style="flex:1">
+            <label>Sezon Adı</label>
+            <input type="text" id="sezonAdi" placeholder="Örn: Mayıs 2025 CWL" />
+          </div>
+          <button class="btn btn-gold" onclick="arsivle()" style="align-self:flex-end">📦 Arşivle & Sıfırla</button>
+        </div>
+      </div>
+      <div id="arsivList"></div>
+    </div>
+
+    <!-- KLAN ARA PAGE -->
+    <div class="page" id="page-klan">
+      <div class="card">
+        <h2>🔍 Klan Ara</h2>
+        <p style="color:var(--text2);font-size:13px;margin-bottom:14px">Clash of Clans klan kodunu girerek klan bilgilerini görüntüleyin.</p>
+        <div class="input-row" style="flex-direction:column;gap:10px">
+          <div class="field" style="width:100%">
+            <label>Klan Tag (#ABC123)</label>
+            <input type="text" id="klanAraTag" placeholder="#2ABC123" style="width:100%" />
+          </div>
+          <div class="field" style="width:100%">
+            <label>API Token</label>
+            <input type="text" id="klanAraToken" placeholder="eyJ0eXAi..." style="width:100%;font-size:12px" />
+          </div>
+          <button class="btn btn-accent" onclick="klanAra()" style="width:100%">🔍 Klanı Ara</button>
+        </div>
+        <div id="klanAraResult" style="margin-top:16px"></div>
+      </div>
     </div>
 
     <!-- VERİ GİRİŞİ PAGE -->
@@ -564,17 +617,16 @@ function calcScore(e){
   if(e.yildiz === 2){
     let sc = 6;
     sc += diff;
-    if(e.yikimYuzde >= 90) sc += 2;
+    if(e.yikimYuzde >= 90) sc += (diff >= 2 ? 3 : 2);
     return sc;
   }
 
   // 1 yıldız
   if(e.yildiz === 1){
-    if(diff < 0) return -2;  // alt BB'ye girdi → -2
-    if(diff === 0) return 0; // eşit BB → 0
-    // üst BB'ye girdi → +3 + diff bonusu + %90 bonusu
+    if(diff < 0) return -2;
+    if(diff === 0) return 0;
     let sc = 3 + diff;
-    if(e.yikimYuzde >= 90) sc += 2;
+    if(e.yikimYuzde >= 90) sc += (diff >= 2 ? 3 : 2);
     return sc;
   }
 
