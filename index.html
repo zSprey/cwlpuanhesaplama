@@ -556,17 +556,15 @@ function calcScore(e){
   // 3 yıldız: %90 bonusu YOK, yıkım otomatik %100 sayılır
   if(e.yildiz === 3){
     let sc = 10;
-    if(diff > 0) sc += Math.min(diff, 3); // üst BB bonusu
-    else if(diff < 0) sc += diff;          // alt BB cezası
+    sc += diff; // üstse +diff, altsa -diff
     return sc;
   }
 
   // 2 yıldız
   if(e.yildiz === 2){
     let sc = 6;
-    if(diff > 0) sc += Math.min(diff, 3); // üst BB bonusu
-    else if(diff < 0) sc += diff;          // alt BB cezası
-    if(e.yikimYuzde >= 90) sc += 2;       // %90 bonusu (alt BB'de de geçerli)
+    sc += diff;
+    if(e.yikimYuzde >= 90) sc += 2;
     return sc;
   }
 
@@ -574,8 +572,8 @@ function calcScore(e){
   if(e.yildiz === 1){
     if(diff < 0) return -2;  // alt BB'ye girdi → -2
     if(diff === 0) return 0; // eşit BB → 0
-    // üst BB'ye girdi → +3, %90 bonusu geçerli
-    let sc = 3;
+    // üst BB'ye girdi → +3 + diff bonusu + %90 bonusu
+    let sc = 3 + diff;
     if(e.yikimYuzde >= 90) sc += 2;
     return sc;
   }
