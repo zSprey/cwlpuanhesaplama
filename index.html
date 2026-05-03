@@ -546,11 +546,6 @@ function renderCurrentPage(){
   if(p==='ayar') renderAyar();
 }
 
-// Firebase hazır olduğunda başlat — race condition koruması
-window.addEventListener('firebase-ready', () => { initFirebase(); });
-// Eğer event zaten atıldıysa (module sync yüklendiyse) hemen çağır
-if(window._firebaseEventFired) initFirebase();
-
 // ===== CALC =====
 function calcScore(e){
   if(!e.katildi) return -15;
@@ -921,7 +916,7 @@ function onYildizChange(pi){
   autoSave(pi);
 }
 
-
+function autoSave(pi){
   saveEntry(pi, true);
 }
 
@@ -1199,6 +1194,11 @@ function renderAll(){
   if(local.warStartDate !== undefined) db.warStartDate = local.warStartDate;
   updateLandStats();
 })();
+
+// Firebase hazır olduğunda başlat — tüm fonksiyonlar tanımlı olduktan sonra
+window.addEventListener('firebase-ready', () => { initFirebase(); });
+// Eğer module script zaten çalıştıysa (flag set edilmişse) hemen çağır
+if(window._firebaseEventFired) initFirebase();
 </script>
 </body>
 </html>
